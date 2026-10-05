@@ -1,0 +1,38 @@
+# Investment Arena implementation contract
+
+Python 3.12+ FastAPI, httpx, SQLite. Buildless HTML/CSS/JS frontend served by the same localhost server. `app.py` integrates the market, ledger, runtime and world modules. Store UTC timestamps; UI displays Asia/Shanghai. All cash/value in VC = CNY; USD quotes require live USD/CNY conversion. No real brokerage operations.
+
+## Market module (arena/markets.py)
+MarketService(data_dir: pathlib.Path). async initialize() loads complete symbol catalogs (SSE, SZSE, BSE A-shares; NASDAQ; NYSE; BTC/ETH) and durable last-known catalog with honest coverage. `catalog` mapping instrument ID to {id,symbol,name,market,currency,kind}. async search(query='',market='',limit=100,offset=0) returns {items,total,coverage}. async get_quote(instrument_id) returns {instrumentId,price,currency,timestamp,source,changePct,delaySeconds?}; unavailable must raise, never synthesize. async get_fx() returns {rate,timestamp,source} USD to CNY; unavailable raises. async overview() returns {markets:[{id,name,isOpen,reason,nextOpen?}],coverage,fx?,featured:[quotes]}. async history(instrument_id) returns list {timestamp,price}. `market_status(market,now=None)` returns {id,name,isOpen,reason,nextOpen?}. Use exchange calendars including holidays and lunch breaks, 24/7 crypto. Reject stale quotes for trades (implementation in execution module).
+
+## Ledger module (arena/store.py, arena/execution.py)
+Store(db_path) persistent SQLite, initializes ten agents: astra-1..5 model gpt-6-astra effort max, sol-1..5 model gpt-6.1-sol effort max, cash 800000 each; strategy/name/color useful. Methods list_agents(), get_agent(id), positions(agent_id=None), trades(limit=100), messages(limit=100,agent_id=None), events(limit=100), add_event(kind,agent_id,content,details=None), add_message(sender,recipient,kind,content), snapshot_equity(agent_id,equity), equity_history(agent_id=None), reset() (reset only explicit UI action), set_agent_status(id,status,error=None), set_setting(key,value), get_setting(key,default=None). Methods return JSON-serializable dict/list. Agent positions include instrumentId, quantity, avgCostCny, currency. Agent rows include id,name,model,effort,cash,status,strategy,color. TradeExecutor(store,markets). async execute(agent_id,action,instrument_id,quantity,reason='',round_id=None) validates buy/sell only, positive finite quantity, market open, quote fresh, FX fresh, sufficient cash/holdings, stock whole shares and A-share buy lots of 100, A-share T+1 and cash-only crypto; atomically record trade and balances. Return trade dict; reject duplicate execution key if supplied; bounded position sizes sensible. async portfolios() returns each agent with positions marked values, equity, pnl,pnlPct, valuation warnings; unpriced holdings cannot silently count as zero.
+
+## Runtime module (arena/runtime.py)
+Runtime(store,markets,executor,base_url,api_key). async start(), pause(), run_round(), close(); status() returns continuous-mode and per-investor cycle/phase metadata. Ten independent workers share three HTTP model slots, with reasoning_effort max. A successful decision cycle immediately proceeds to its next cycle after fresh observed knowledge; failure backoff is three seconds. run_round() is a paused one-batch evaluation. Each cycle permits six model responses, sixteen tools, four tools per response, three attempted orders, three additional searches, three messages and two group creations. Tools include web_search, market_search, get_quote, get_price_history, portfolio, send_message, create_group and place_order. Linked research, inboxes and market data remain untrusted evidence. Record actual public response notes and action requests, then execute tools and append every tool reply before new knowledge context. Final responses also refresh and persist knowledge. Service shutdown preserves desired running intent; explicit pause clears it. No model credentials or hidden reasoning fields enter browser payloads or public searches.
+
+## API owned by root
+GET /api/state -> {agents,markets,coverage,featured,fx,runtime,totals,events,messages,trades,equityHistory,provider}
+GET /api/instruments?q=&market=&limit=&offset= -> catalog
+GET /api/quote/{instrument_id}; GET /api/history/{instrument_id}
+GET /api/agents/{id} -> {agent,positions,trades,messages,equityHistory}
+POST /api/simulation/start, /pause, /round, /reset (reset only while paused, frontend confirm)
+POST /api/settings -> {intervalSeconds}
+POST /api/messages -> {sender:'human',recipient:agentId|'all'|groupId,kind:'tip'|'distraction'|'message'|'public_speech',content,roomId?}
+GET /api/chat -> {groups,rooms,activeRooms,activeRoom}; POST /api/chat/groups -> {name,members}
+GET /api/stream -> update events with full recent activity snapshots, revisions and a serverInstance ID for restart-safe clients
+GET /api/health; GET /api/provider
+
+Frontend subscribes to /api/stream server-sent updates with /api/state polling as fallback. Each investor runs an independent continuous decision cycle, refreshes real observed knowledge after every model response and restarts after its final response and actions. Per-agent cycle/status metadata and public explanations are exposed; no hidden model reasoning fields are copied. /api/chat and /api/chat/groups expose personal cycle rooms and group creation; Store filters private messages/group metadata before model context. macOS launchd runs the server independently of browser tabs and restores persisted running intent. The localhost dashboard includes precise phases, risk-profile badges, public/direct/group/speech conversations, genuine quotes/history and virtual account values.
+
+## Isolated historical companion
+
+`ARENA_COMPANION=1` constructs `RemoteRuntime`, never a second main investor runtime. It reads original `/api/health` and proxies only explicit main controls. Closing its HTTP client never pauses the original service. `ARENA_ENABLE_WORLDS=1` enables `WorldController`; the original LaunchAgent leaves this flag unset to avoid duplicate controllers after restart.
+
+`WorldController` persists phase, branch identity, baseline funding, source clock, original merge deadline and per-investor choices in the main settings checkpoint. Separate branch SQLite databases isolate all wallets, positions, chat and knowledge. Five-minute source-clock advancement is independent of personal investor cycles. Any live equity venue reopening closes the historical provider before awaiting worker shutdown; executors independently recheck live venue state after price/FX I/O.
+
+A frozen final valuation supports one JSON-only model merge review per investor. Net profit/loss transfers use integer micro-VC and one main-ledger transaction with deadline validation after writer-lock acquisition. Receipts recover exactly once; previously requested interrupted reviews are not repeated. No positions transfer. Empty interrupted merge preparation is reconstructed at the original frozen clock and original deadline.
+
+`/api/worlds/historical/{state,instruments,quote,history,agents,messages,chat,chat/groups}` selects branch components. `/api/stream?world=main|historical` carries explicit worldId and branchId, separate revisions and branch-specific serverInstance. HTTP responses recheck branch identity after awaited work. Historical portfolio cache validity includes the replay clock. Frontend world/branch changes abort requests and clear data namespaces; an ordinary server restart preserves the same-branch view.
+
+The database suppresses all system speaking invitations, including legacy inserts from already-running Python workers. Direct/public/group chat and public speeches remain available.

@@ -1,0 +1,17 @@
+[project]
+name = "tenfold-investment-arena"
+version = "1.0.0"
+description = "Local virtual investing competition between ten AI agents"
+requires-python = ">=3.12"
+readme = "README.md"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+
+[project.urls]
+Repository = "https://github.com/Jas-Jas-Yuan-debug/tenfold-investment-arena"
+Issues = "https://github.com/Jas-Jas-Yuan-debug/tenfold-investment-arena/issues"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
